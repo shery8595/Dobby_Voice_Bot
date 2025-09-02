@@ -50,7 +50,7 @@ Start the bot:
 bash
 Copy code
 node index.js
-🚀 Usage
+##🚀 Usage
 Join a voice channel in Discord
 
 Use /record start to begin recording
@@ -63,7 +63,7 @@ Use /transcribe <filename> to convert to text
 
 Use /summarize <filename> to get a summary and ask questions
 
-🛠️ Tech Stack
+##🛠️ Tech Stack
 Discord.js – Discord bot framework
 
 Supabase – Storage for audio files
@@ -72,7 +72,7 @@ Deepgram – Speech-to-text transcription
 
 Fireworks (Dobby) – LLM for summarization and Q&A
 
-📜 License
+##📜 License
 MIT License © 2025
 
 css
@@ -86,4 +86,3 @@ Do you want me to also add a **diagram** (like a simple flow chart of how audio 
 
 
 
-Ask ChatGPT
