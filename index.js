@@ -443,7 +443,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers, 
     GatewayIntentBits.GuildMessages
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.Guild, Partials.GuildMember]
 });
 
 async function registerCommands() {
@@ -512,14 +512,25 @@ client.on('interactionCreate', async (interaction) => {
       
       if (action === 'start') {
         try {
-          const member = await interaction.guild.members.fetch(interaction.user.id);
+          // Handle null guild (mobile client issue)
+          if (!interaction.guild) {
+            return await safeReply(interaction, 'This command must be used in a server, not in DMs.', { ephemeral: true });
+          }
+
+          // Fetch guild to ensure it's fully loaded
+          const guild = await client.guilds.fetch(interaction.guildId);
+          if (!guild) {
+            return await safeReply(interaction, 'Could not access server information. Please try again.', { ephemeral: true });
+          }
+
+          const member = await guild.members.fetch(interaction.user.id);
           const vc = member.voice.channel;
 
           if (!vc) {
             return await safeReply(interaction, 'Join a voice channel first.', { ephemeral: true });
           }
 
-          if (activeRecordings.has(vc.guild.id)) {
+          if (activeRecordings.has(guild.id)) {
             return await safeReply(interaction, 'Already recording in this server.', { ephemeral: true });
           }
 
@@ -527,11 +538,11 @@ client.on('interactionCreate', async (interaction) => {
           
           const conn = joinVoiceChannel({
             channelId: vc.id,
-            guildId: vc.guild.id,
-            adapterCreator: vc.guild.voiceAdapterCreator,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
           });
 
-          startRecording(conn, vc.guild.id);
+          startRecording(conn, guild.id);
           await safeReply(interaction, `🔴 Started recording in ${vc.name}. Speak clearly into your microphone. Use \`/record stop\` when finished.`);
         } catch (err) {
           console.error('Error starting recording:', err);
