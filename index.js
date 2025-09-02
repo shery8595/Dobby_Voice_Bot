@@ -339,7 +339,17 @@ async function stopRecording(guildId) {
   s.userStreams.clear();
 
   s.pcmWriter.end();
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  await new Promise(resolve => setTimeout(resolve, 3000)); // increase flush time for cloud
+
+  // Check PCM size before conversion
+  if (!fs.existsSync(s.pcmPath)) {
+    throw new Error(`PCM file not found: ${s.pcmPath}`);
+  }
+  const pcmSize = fs.statSync(s.pcmPath).size;
+  console.log(`PCM file size: ${pcmSize} bytes`);
+  if (pcmSize < 100) {
+    throw new Error(`Recording PCM appears empty (${pcmSize} bytes). Make sure people are speaking.`);
+  }
 
   console.log('Converting PCM to WAV...');
   await new Promise((resolve, reject) => {
@@ -357,13 +367,8 @@ async function stopRecording(guildId) {
       stdio: ['pipe', 'pipe', 'pipe'] 
     });
     
-    ffmpeg.stdout.on('data', (data) => {
-      console.log('FFmpeg stdout:', data.toString());
-    });
-    
-    ffmpeg.stderr.on('data', (data) => {
-      console.log('FFmpeg stderr:', data.toString());
-    });
+    ffmpeg.stdout.on('data', (data) => console.log('FFmpeg stdout:', data.toString()));
+    ffmpeg.stderr.on('data', (data) => console.log('FFmpeg stderr:', data.toString()));
     
     ffmpeg.on('close', (code) => {
       console.log(`FFmpeg finished with code ${code}`);
@@ -407,6 +412,7 @@ async function stopRecording(guildId) {
   
   return s.wavPath;
 }
+
 
 // ---------- Discord bot + slash commands ----------
 const client = new Client({
@@ -788,3 +794,4 @@ process.on('SIGINT', () => {
 
 console.log('Starting Discord bot with Supabase integration...');
 client.login(DISCORD_TOKEN);
+
