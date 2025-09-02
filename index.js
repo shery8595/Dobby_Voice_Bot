@@ -339,17 +339,7 @@ async function stopRecording(guildId) {
   s.userStreams.clear();
 
   s.pcmWriter.end();
-  await new Promise(resolve => setTimeout(resolve, 7000)); // increase flush time for cloud
-
-  // Check PCM size before conversion
-  if (!fs.existsSync(s.pcmPath)) {
-    throw new Error(`PCM file not found: ${s.pcmPath}`);
-  }
-  const pcmSize = fs.statSync(s.pcmPath).size;
-  console.log(`PCM file size: ${pcmSize} bytes`);
-  if (pcmSize < 100) {
-    throw new Error(`Recording PCM appears empty (${pcmSize} bytes). Make sure people are speaking.`);
-  }
+  await new Promise(resolve => setTimeout(resolve, 2000));
 
   console.log('Converting PCM to WAV...');
   await new Promise((resolve, reject) => {
@@ -367,8 +357,13 @@ async function stopRecording(guildId) {
       stdio: ['pipe', 'pipe', 'pipe'] 
     });
     
-    ffmpeg.stdout.on('data', (data) => console.log('FFmpeg stdout:', data.toString()));
-    ffmpeg.stderr.on('data', (data) => console.log('FFmpeg stderr:', data.toString()));
+    ffmpeg.stdout.on('data', (data) => {
+      console.log('FFmpeg stdout:', data.toString());
+    });
+    
+    ffmpeg.stderr.on('data', (data) => {
+      console.log('FFmpeg stderr:', data.toString());
+    });
     
     ffmpeg.on('close', (code) => {
       console.log(`FFmpeg finished with code ${code}`);
@@ -413,12 +408,12 @@ async function stopRecording(guildId) {
   return s.wavPath;
 }
 
-
 // ---------- Discord bot + slash commands ----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds, 
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers, 
     GatewayIntentBits.GuildMessages
   ],
   partials: [Partials.Channel]
@@ -489,8 +484,9 @@ client.on('interactionCreate', async (interaction) => {
     const action = interaction.options.getString('action');
     
     if (action === 'start') {
-      const member = interaction.member;
-      const vc = member?.voice?.channel;
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const vc = member.voice.channel;
+
       if (!vc) return interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
 
       if (activeRecordings.has(vc.guild.id)) {
@@ -794,5 +790,3 @@ process.on('SIGINT', () => {
 
 console.log('Starting Discord bot with Supabase integration...');
 client.login(DISCORD_TOKEN);
-
-
