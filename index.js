@@ -339,7 +339,7 @@ async function stopRecording(guildId) {
   s.userStreams.clear();
 
   s.pcmWriter.end();
-  await new Promise(resolve => setTimeout(resolve, 3000)); // increase flush time for cloud
+  await new Promise(resolve => setTimeout(resolve, 7000)); // increase flush time for cloud
 
   // Check PCM size before conversion
   if (!fs.existsSync(s.pcmPath)) {
@@ -794,4 +794,5 @@ process.on('SIGINT', () => {
 
 console.log('Starting Discord bot with Supabase integration...');
 client.login(DISCORD_TOKEN);
+
 
