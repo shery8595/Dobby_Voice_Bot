@@ -1,6 +1,6 @@
 /**
- * Discord voice recorder -> Deepgram transcription -> Fireworks (Dobby) summarization & Q/A
- * Fixed version with proper session management
+ * Discord voice recorder -> Supabase Storage -> Deepgram transcription -> Fireworks (Dobby) summarization & Q/A
+ * Enhanced version with Supabase database and file storage
  */
 
 require('dotenv').config();
@@ -8,22 +8,129 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
 
-const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, getVoiceConnection, EndBehaviorType } = require('@discordjs/voice');
 const prism = require('prism-media');
 
+// Environment variables
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 const FIREWORK_API_KEY = process.env.FIREWORK_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DOBBY_MODEL = process.env.DOBBY_MODEL || 'accounts/sentientfoundation/models/dobby-unhinged-llama-3-3-70b-new';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || require('ffmpeg-static');
 
+// Initialize Supabase client with Service Role Key
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
 // ---------- Session management ----------
-// Separate storage for active recordings and completed transcripts
 const activeRecordings = new Map(); // For active recording sessions
-const transcripts = new Map(); // For completed transcripts
+
+// ---------- Supabase Database Functions ----------
+async function saveRecordingToDatabase(guildId, userId, title, fileUrl) {
+  const { data, error } = await supabase
+    .from('recordings')
+    .insert([
+      {
+        guild_id: guildId,
+        user_id: userId,
+        title: title,
+        file_url: fileUrl,
+        created_at: new Date().toISOString()
+      }
+    ])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Database insert error:', error);
+    throw new Error(`Failed to save recording to database: ${error.message}`);
+  }
+
+  return data;
+}
+
+async function getRecordings(guildId, limit = 10) {
+  const { data, error } = await supabase
+    .from('recordings')
+    .select('*')
+    .eq('guild_id', guildId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Database query error:', error);
+    throw new Error(`Failed to fetch recordings: ${error.message}`);
+  }
+
+  return data || [];
+}
+
+async function getRecordingById(recordingId) {
+  const { data, error } = await supabase
+    .from('recordings')
+    .select('*')
+    .eq('id', recordingId)
+    .single();
+
+  if (error) {
+    console.error('Database query error:', error);
+    throw new Error(`Failed to fetch recording: ${error.message}`);
+  }
+
+  return data;
+}
+
+// ---------- Supabase Storage Functions ----------
+async function uploadRecordingToSupabase(filePath, guildId) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File does not exist: ${filePath}`);
+  }
+
+  const fileName = `${guildId}_${Date.now()}.wav`;
+  const fileBuffer = fs.readFileSync(filePath);
+
+  const { data, error } = await supabase.storage
+    .from('recordings')
+    .upload(fileName, fileBuffer, {
+      contentType: 'audio/wav',
+      cacheControl: '3600',
+      upsert: false
+    });
+
+  if (error) {
+    console.error('Storage upload error:', error);
+    throw new Error(`Failed to upload to Supabase: ${error.message}`);
+  }
+
+  // Get public URL
+  const { data: urlData } = supabase.storage
+    .from('recordings')
+    .getPublicUrl(fileName);
+
+  return {
+    path: data.path,
+    fullPath: data.fullPath,
+    publicUrl: urlData.publicUrl
+  };
+}
+
+async function downloadRecordingFromSupabase(fileName) {
+  const { data, error } = await supabase.storage
+    .from('recordings')
+    .download(fileName);
+
+  if (error) {
+    console.error('Storage download error:', error);
+    throw new Error(`Failed to download from Supabase: ${error.message}`);
+  }
+
+  return data; // This is a Blob
+}
 
 // ---------- Helpers ----------
 function ensureDir(dir) {
@@ -56,6 +163,38 @@ async function transcribeWithDeepgram(filePath) {
 
   try {
     const response = await axios.post(url, audioBuffer, { headers, timeout: 120000 });
+    
+    if (response.data && response.data.results && response.data.results.channels) {
+      let transcript = '';
+      for (const channel of response.data.results.channels) {
+        for (const alternative of channel.alternatives) {
+          transcript += alternative.transcript + ' ';
+        }
+      }
+      return transcript.trim();
+    } else {
+      throw new Error('Unexpected response format from Deepgram');
+    }
+  } catch (error) {
+    console.error('Deepgram API error:', error.response?.data || error.message);
+    throw new Error(`Deepgram transcription failed: ${error.response?.data?.err_msg || error.message}`);
+  }
+}
+
+// Transcribe from Supabase stored file
+async function transcribeSupabaseFile(fileName) {
+  const blob = await downloadRecordingFromSupabase(fileName);
+  const arrayBuffer = await blob.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  
+  const url = 'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true';
+  const headers = {
+    'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+    'Content-Type': 'audio/wav'
+  };
+
+  try {
+    const response = await axios.post(url, buffer, { headers, timeout: 120000 });
     
     if (response.data && response.data.results && response.data.results.channels) {
       let transcript = '';
@@ -122,17 +261,14 @@ function startRecording(connection, guildId) {
         end: { behavior: EndBehaviorType.Manual }
       });
       
-      // Create a new decoder for this user
       const decoder = new prism.opus.Decoder({
         rate: 48000,
         channels: 2,
         frameSize: 960
       });
       
-      // Store both stream and decoder
       userStreams.set(userId, { opusStream, decoder });
       
-      // Pipeline: Opus -> Decoder -> PCM file
       opusStream.pipe(decoder);
       decoder.pipe(pcmWriter, { end: false });
       
@@ -173,7 +309,6 @@ function startRecording(connection, guildId) {
     console.log('User stopped speaking:', userId);
   });
 
-  // Store the active recording session
   activeRecordings.set(guildId, {
     connection,
     pcmPath,
@@ -203,23 +338,19 @@ async function stopRecording(guildId) {
   }
   s.userStreams.clear();
 
-  // Close PCM writer
   s.pcmWriter.end();
-  
-  // Wait for file to be written
   await new Promise(resolve => setTimeout(resolve, 2000));
 
-  // Convert PCM to WAV using FFmpeg
   console.log('Converting PCM to WAV...');
   await new Promise((resolve, reject) => {
     const ffmpegArgs = [
-      '-f', 's16le',           // Input format: signed 16-bit little endian
-      '-ar', '48000',          // Sample rate
-      '-ac', '2',              // Channels
-      '-i', s.pcmPath,         // Input file
-      '-acodec', 'pcm_s16le',  // Output codec
-      '-f', 'wav',             // Output format
-      s.wavPath                // Output file
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      '-i', s.pcmPath,
+      '-acodec', 'pcm_s16le',
+      '-f', 'wav',
+      s.wavPath
     ];
 
     const ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs, { 
@@ -237,7 +368,6 @@ async function stopRecording(guildId) {
     ffmpeg.on('close', (code) => {
       console.log(`FFmpeg finished with code ${code}`);
       if (code === 0) {
-        // Clean up PCM file
         try {
           fs.unlinkSync(s.pcmPath);
         } catch (e) {
@@ -255,7 +385,6 @@ async function stopRecording(guildId) {
     });
   });
 
-  // Destroy voice connection
   try {
     const conn = getVoiceConnection(s.connection.joinConfig.guildId);
     if (conn) conn.destroy();
@@ -263,10 +392,8 @@ async function stopRecording(guildId) {
     console.warn('Error destroying connection:', e.message);
   }
 
-  // Remove from active recordings
   activeRecordings.delete(guildId);
   
-  // Verify the WAV file was created and has content
   if (!fs.existsSync(s.wavPath)) {
     throw new Error(`WAV file was not created: ${s.wavPath}`);
   }
@@ -274,7 +401,7 @@ async function stopRecording(guildId) {
   const stats = fs.statSync(s.wavPath);
   console.log(`Final WAV file: ${s.wavPath} (${stats.size} bytes)`);
   
-  if (stats.size < 1000) { // Less than 1KB probably means no actual audio
+  if (stats.size < 1000) {
     throw new Error(`Recording appears to be empty or too short (${stats.size} bytes). Make sure people are speaking during the recording.`);
   }
   
@@ -295,16 +422,27 @@ async function registerCommands() {
   const commands = [
     new SlashCommandBuilder().setName('record').setDescription('Start/stop recording')
       .addStringOption(opt => opt.setName('action').setDescription('start or stop').setRequired(true)
-        .addChoices({ name: 'start', value: 'start' }, { name: 'stop', value: 'stop' })),
-    new SlashCommandBuilder().setName('summary').setDescription('Get summary of last recording'),
-    new SlashCommandBuilder().setName('ask').setDescription('Ask about last recording')
-      .addStringOption(opt => opt.setName('question').setDescription('question about recording').setRequired(true))
+        .addChoices({ name: 'start', value: 'start' }, { name: 'stop', value: 'stop' }))
+      .addStringOption(opt => opt.setName('title').setDescription('Title for the recording (when stopping)')),
+    
+    new SlashCommandBuilder().setName('recordings').setDescription('List all recordings for this server'),
+    
+    new SlashCommandBuilder().setName('select').setDescription('Select a recording to analyze')
+      .addStringOption(opt => opt.setName('recording_id').setDescription('Recording ID').setRequired(true)),
+    
+    new SlashCommandBuilder().setName('summary').setDescription('Get summary of selected recording'),
+    
+    new SlashCommandBuilder().setName('ask').setDescription('Ask about selected recording')
+      .addStringOption(opt => opt.setName('question').setDescription('Question about recording').setRequired(true))
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
   console.log('Registered slash commands globally.');
 }
+
+// Store selected recording per guild
+const selectedRecordings = new Map();
 
 client.once('clientReady', async () => {
   console.log('Bot ready:', client.user.tag);
@@ -316,17 +454,39 @@ client.once('clientReady', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (!interaction.isChatInputCommand() && !interaction.isStringSelectMenu()) return;
+
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'select_recording') {
+      const recordingId = interaction.values[0];
+      selectedRecordings.set(interaction.guildId, recordingId);
+      
+      try {
+        const recording = await getRecordingById(recordingId);
+        await interaction.reply({
+          content: `Selected recording: **${recording.title}**\nCreated: ${new Date(recording.created_at).toLocaleString()}\n\nYou can now use \`/summary\` or \`/ask\` to analyze this recording.`,
+          ephemeral: true
+        });
+      } catch (err) {
+        await interaction.reply({
+          content: `Error selecting recording: ${err.message}`,
+          ephemeral: true
+        });
+      }
+    }
+    return;
+  }
+
   const { commandName } = interaction;
 
   if (commandName === 'record') {
     const action = interaction.options.getString('action');
+    
     if (action === 'start') {
       const member = interaction.member;
       const vc = member?.voice?.channel;
       if (!vc) return interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
 
-      // Check if already recording
       if (activeRecordings.has(vc.guild.id)) {
         return interaction.reply({ content: 'Already recording in this server.', ephemeral: true });
       }
@@ -340,14 +500,15 @@ client.on('interactionCreate', async (interaction) => {
           adapterCreator: vc.guild.voiceAdapterCreator,
         });
 
-        const filepath = startRecording(conn, vc.guild.id);
+        startRecording(conn, vc.guild.id);
         await interaction.editReply({ 
-          content: `Started recording in ${vc.name}. Speak clearly into your microphone. Use \`/record stop\` when finished.` 
+          content: `🔴 Started recording in ${vc.name}. Speak clearly into your microphone. Use \`/record stop\` when finished.` 
         });
       } catch (err) {
         console.error('Error starting recording:', err);
         await interaction.editReply({ content: `Error starting recording: ${err.message}` });
       }
+      
     } else if (action === 'stop') {
       try {
         const guildId = interaction.guildId;
@@ -356,30 +517,34 @@ client.on('interactionCreate', async (interaction) => {
         }
         
         await interaction.deferReply();
-        await interaction.editReply({ content: 'Stopping recording and processing audio...' });
+        await interaction.editReply({ content: '⏹️ Stopping recording and processing audio...' });
         
         const filePath = await stopRecording(guildId);
+        await interaction.editReply({ content: '📤 Uploading recording to Supabase...' });
         
-        await interaction.editReply({ content: 'Recording stopped. Starting transcription with Deepgram...' });
+        // Upload to Supabase
+        const uploadResult = await uploadRecordingToSupabase(filePath, guildId);
         
-        const transcript = await transcribeWithDeepgram(filePath);
-
-        if (!transcript || transcript.trim().length === 0) {
-          await interaction.editReply({ 
-            content: 'No speech detected in the recording. Make sure people speak clearly and loudly enough for Discord to pick up.' 
-          });
-          return;
+        // Get title from user input or generate default
+        const title = interaction.options.getString('title') || `Recording ${new Date().toLocaleDateString()}`;
+        
+        // Save to database
+        const dbRecord = await saveRecordingToDatabase(
+          guildId, 
+          interaction.user.id, 
+          title, 
+          uploadResult.publicUrl
+        );
+        
+        // Clean up local file
+        try {
+          fs.unlinkSync(filePath);
+        } catch (e) {
+          console.warn('Could not delete local file:', e.message);
         }
-
-        // Store transcript separately from active recording sessions
-        transcripts.set(guildId, { 
-          transcript, 
-          transcriptFile: filePath,
-          timestamp: Date.now()
-        });
         
         await interaction.editReply({ 
-          content: `Transcription completed! Found ${transcript.length} characters of text.\n\nPreview: "${transcript.substring(0, 100)}${transcript.length > 100 ? '...' : ''}"\n\nUse \`/summary\` or \`/ask\` to analyze the recording.` 
+          content: `✅ Recording saved successfully!\n**Title:** ${title}\n**ID:** ${dbRecord.id}\n\nUse \`/recordings\` to see all recordings or \`/select\` to analyze this one.` 
         });
         
       } catch (err) {
@@ -399,50 +564,151 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     }
+    
+  } else if (commandName === 'recordings') {
+    try {
+      await interaction.deferReply();
+      
+      const recordings = await getRecordings(interaction.guildId);
+      
+      if (recordings.length === 0) {
+        await interaction.editReply({ 
+          content: 'No recordings found for this server. Use `/record start` to create your first recording!' 
+        });
+        return;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('📼 Server Recordings')
+        .setColor(0x00AE86)
+        .setDescription(`Found ${recordings.length} recording(s)`);
+
+      // Add fields for each recording
+      recordings.forEach((recording, index) => {
+        const date = new Date(recording.created_at).toLocaleString();
+        embed.addFields({
+          name: `${index + 1}. ${recording.title}`,
+          value: `ID: \`${recording.id}\`\nCreated: ${date}`,
+          inline: true
+        });
+      });
+
+      // Create select menu for recordings
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('select_recording')
+        .setPlaceholder('Choose a recording to analyze...')
+        .setMaxValues(1);
+
+      recordings.forEach(recording => {
+        selectMenu.addOptions({
+          label: recording.title,
+          description: `Created: ${new Date(recording.created_at).toLocaleDateString()}`,
+          value: recording.id.toString()
+        });
+      });
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+
+      await interaction.editReply({ 
+        embeds: [embed],
+        components: [row]
+      });
+      
+    } catch (err) {
+      console.error('Error fetching recordings:', err);
+      await interaction.editReply({ content: `Error fetching recordings: ${err.message}` });
+    }
+    
+  } else if (commandName === 'select') {
+    const recordingId = interaction.options.getString('recording_id');
+    
+    try {
+      const recording = await getRecordingById(recordingId);
+      
+      if (recording.guild_id !== interaction.guildId) {
+        return interaction.reply({ 
+          content: 'This recording does not belong to this server.', 
+          ephemeral: true 
+        });
+      }
+      
+      selectedRecordings.set(interaction.guildId, recordingId);
+      
+      await interaction.reply({
+        content: `Selected recording: **${recording.title}**\nCreated: ${new Date(recording.created_at).toLocaleString()}\n\nYou can now use \`/summary\` or \`/ask\` to analyze this recording.`,
+        ephemeral: true
+      });
+      
+    } catch (err) {
+      await interaction.reply({
+        content: `Error selecting recording: ${err.message}`,
+        ephemeral: true
+      });
+    }
+    
   } else if (commandName === 'summary') {
     const guildId = interaction.guildId;
-    const transcriptData = transcripts.get(guildId);
-    if (!transcriptData || !transcriptData.transcript) {
+    const selectedRecordingId = selectedRecordings.get(guildId);
+    
+    if (!selectedRecordingId) {
       return interaction.reply({ 
-        content: 'No transcript available. Record a conversation first using `/record start` and `/record stop`.', 
+        content: 'No recording selected. Use `/recordings` to list and select a recording first.', 
         ephemeral: true 
       });
     }
     
     await interaction.deferReply();
 
-    const prompt = `Summarize the following meeting transcript into:
+    try {
+      const recording = await getRecordingById(selectedRecordingId);
+      
+      await interaction.editReply({ content: '🔍 Transcribing recording with Deepgram...' });
+      
+      // Extract filename from URL
+      const fileName = recording.file_url.split('/').pop().split('?')[0];
+      const transcript = await transcribeSupabaseFile(fileName);
+      
+      if (!transcript || transcript.trim().length === 0) {
+        await interaction.editReply({ 
+          content: 'No speech detected in the recording. The audio might be too quiet or contain no clear speech.' 
+        });
+        return;
+      }
+
+      await interaction.editReply({ content: '🤖 Generating summary with Dobby...' });
+
+      const prompt = `Summarize the following meeting transcript into:
 1) Short meeting summary (2-3 sentences)
 2) Key bullet points (5)
 3) Action items (list)
 4) Decisions made (list)
 
 Transcript:
-${transcriptData.transcript}`;
+${transcript}`;
 
-    try {
       const summary = await callDobby(prompt, 'You are an assistant that summarizes meeting transcripts. Produce clear bullets and action items.');
       
-      // Split into chunks if too long for Discord
       if (summary.length > 1900) {
         const chunks = summary.match(/.{1,1900}(?:\s|$)/g) || [summary];
-        await interaction.editReply({ content: `**Meeting Summary (via Dobby)**\n${chunks[0]}` });
+        await interaction.editReply({ content: `**Meeting Summary: ${recording.title}**\n${chunks[0]}` });
         for (let i = 1; i < chunks.length; i++) {
           await interaction.followUp({ content: chunks[i] });
         }
       } else {
-        await interaction.editReply({ content: `**Meeting Summary (via Dobby)**\n${summary}` });
+        await interaction.editReply({ content: `**Meeting Summary: ${recording.title}**\n${summary}` });
       }
     } catch (err) {
-      console.error('Error calling Dobby:', err);
-      await interaction.editReply({ content: 'Error calling Dobby: ' + err.message });
+      console.error('Error generating summary:', err);
+      await interaction.editReply({ content: `Error generating summary: ${err.message}` });
     }
+    
   } else if (commandName === 'ask') {
     const guildId = interaction.guildId;
-    const transcriptData = transcripts.get(guildId);
-    if (!transcriptData || !transcriptData.transcript) {
+    const selectedRecordingId = selectedRecordings.get(guildId);
+    
+    if (!selectedRecordingId) {
       return interaction.reply({ 
-        content: 'No transcript available. Record a conversation first using `/record start` and `/record stop`.', 
+        content: 'No recording selected. Use `/recordings` to list and select a recording first.', 
         ephemeral: true 
       });
     }
@@ -450,20 +716,37 @@ ${transcriptData.transcript}`;
     const question = interaction.options.getString('question');
     await interaction.deferReply();
 
-    const prompt = `You are an assistant that answers questions based on a meeting transcript. 
+    try {
+      const recording = await getRecordingById(selectedRecordingId);
+      
+      await interaction.editReply({ content: '🔍 Transcribing recording with Deepgram...' });
+      
+      // Extract filename from URL
+      const fileName = recording.file_url.split('/').pop().split('?')[0];
+      const transcript = await transcribeSupabaseFile(fileName);
+      
+      if (!transcript || transcript.trim().length === 0) {
+        await interaction.editReply({ 
+          content: 'No speech detected in the recording. Cannot answer questions about empty transcript.' 
+        });
+        return;
+      }
 
-Transcript: ${transcriptData.transcript}
+      await interaction.editReply({ content: '🤖 Analyzing with Dobby...' });
+
+      const prompt = `You are an assistant that answers questions based on a meeting transcript. 
+
+Transcript: ${transcript}
 
 Question: ${question}
 
 Answer concisely and reference the part of the transcript that supports your answer if possible.`;
 
-    try {
       const answer = await callDobby(prompt, 'You are an assistant specialized in extracting facts from transcripts.');
-      await interaction.editReply({ content: `**Answer:**\n${answer}` });
+      await interaction.editReply({ content: `**Question:** ${question}\n**Answer:**\n${answer}` });
     } catch (err) {
-      console.error('Error calling Dobby:', err);
-      await interaction.editReply({ content: 'Error calling Dobby: ' + err.message });
+      console.error('Error answering question:', err);
+      await interaction.editReply({ content: `Error answering question: ${err.message}` });
     }
   }
 });
@@ -483,7 +766,6 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
-  // Gracefully shut down
   client.destroy();
   process.exit(1);
 });
@@ -492,7 +774,6 @@ process.on('uncaughtException', (error) => {
 process.on('SIGINT', () => {
   console.log('Received SIGINT, shutting down gracefully...');
   
-  // Stop all active recordings
   for (const [guildId, session] of activeRecordings) {
     try {
       stopRecording(guildId);
@@ -505,5 +786,5 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-console.log('Starting Discord bot...');
+console.log('Starting Discord bot with Supabase integration...');
 client.login(DISCORD_TOKEN);
