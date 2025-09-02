@@ -1,88 +1,71 @@
-# 🎙️ Discord Voice Recorder + Supabase + Deepgram + Dobby LLM
+Discord Voice Recorder Bot 🎤
+A powerful Discord bot that records voice conversations, transcribes them using Deepgram, and provides AI-powered summaries and Q&A using Fireworks AI's Dobby model. All recordings are stored in Supabase for easy access and management.
 
-This project is a Discord bot that can **record voice chats**, upload the audio to **Supabase storage**, and then let users **list and select recordings** for **transcription** using Deepgram.  
-The transcribed text is then passed to **Fireworks (Dobby LLM)** for **summarization** and **Q&A**.
+https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white
+https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white
+https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white
 
----
+✨ Features
+🎤 Voice Recording: Record voice conversations in any Discord voice channel
 
-## ✨ Features
-- ✅ Record voice in Discord channels  
-- ✅ Save recordings in Supabase Storage  
-- ✅ List and select past recordings  
-- ✅ Convert audio to text using Deepgram  
-- ✅ Summarize + Q&A with Fireworks (Dobby)  
+📝 AI Transcription: Automatic transcription using Deepgram's speech recognition
 
----
+🤖 AI Summarization: Get concise summaries of your conversations using Fireworks AI
 
-## 📦 Requirements
-- Node.js **20+**  
-- Discord Bot Token  
-- Supabase Project + Storage Bucket  
-- Deepgram API Key  
-- Fireworks (Dobby) API Key  
+❓ Q&A System: Ask questions about your recorded conversations
 
----
+💾 Cloud Storage: All recordings stored securely in Supabase
 
-## ⚙️ Setup
+🔍 Easy Access: Browse and select from previous recordings with interactive menus
 
-1. Clone this repo:
-   ```bash
-   git clone https://github.com/yourusername/discord-voice-dobby.git
-   cd discord-voice-dobby
-Install dependencies:
+🚀 Quick Start
+Prerequisites
+Node.js 16.9.0 or higher
+
+FFmpeg installed on your system
+
+Discord bot token and application ID
+
+Supabase account
+
+Deepgram API key
+
+Fireworks AI API key
+
+Installation
+Clone the repository
 
 bash
-Copy code
+git clone https://github.com/your-username/discord-voice-recorder.git
+cd discord-voice-recorder
+Install dependencies
+
+bash
 npm install
-Create a .env file in the root folder:
+Set up environment variables
+Create a .env file in the root directory:
 
 env
-Copy code
-DISCORD_TOKEN=your_discord_token
-DISCORD_CLIENT_ID=your_discord_client_id
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_anon_key
-DEEPGRAM_API_KEY=your_deepgram_api_key
-FIREWORKS_API_KEY=your_fireworks_api_key
-SUPABASE_BUCKET=recordings
-Start the bot:
+DISCORD_TOKEN=your_discord_bot_token_here
+CLIENT_ID=your_discord_application_id_here
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+FIREWORK_API_KEY=your_fireworks_ai_api_key_here
+SUPABASE_URL=your_supabase_url_here
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
+Invite your bot to Discord
+Create an invite URL with the following permissions:
+
+applications.commands
+
+Send Messages
+
+Connect
+
+Speak
+
+Use Voice Activity
+
+Start the bot
 
 bash
-Copy code
 node index.js
-##🚀 Usage
-Join a voice channel in Discord
-
-Use /record start to begin recording
-
-Use /record stop to stop and save the file to Supabase
-
-Use /list to see recordings
-
-Use /transcribe <filename> to convert to text
-
-Use /summarize <filename> to get a summary and ask questions
-
-##🛠️ Tech Stack
-Discord.js – Discord bot framework
-
-Supabase – Storage for audio files
-
-Deepgram – Speech-to-text transcription
-
-Fireworks (Dobby) – LLM for summarization and Q&A
-
-##📜 License
-MIT License © 2025
-
-css
-Copy code
-
-Do you want me to also add a **diagram** (like a simple flow chart of how audio → supabase → deepgram → dobby works) in the README?
-
-
-
-
-
-
-
