@@ -1,6 +1,7 @@
 /**
  * Discord voice recorder -> Supabase Storage -> Deepgram transcription -> Fireworks (Dobby) summarization & Q/A
  * Enhanced version with Supabase database and file storage
+ * Fixed voice channel detection for deployment issues
  */
 
 require('dotenv').config();
@@ -416,7 +417,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers, 
     GatewayIntentBits.GuildMessages
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.GuildMember]
 });
 
 async function registerCommands() {
@@ -444,6 +445,18 @@ async function registerCommands() {
 
 // Store selected recording per guild
 const selectedRecordings = new Map();
+
+client.once('ready', () => {
+  console.log('Bot is ready! Logged in as:', client.user.tag);
+  console.log('Guilds:', client.guilds.cache.size);
+  console.log('Bot permissions verified');
+  
+  try {
+    registerCommands();
+  } catch (err) {
+    console.warn('Could not register commands automatically:', err.message);
+  }
+});
 
 client.once('clientReady', async () => {
   console.log('Bot ready:', client.user.tag);
@@ -484,17 +497,70 @@ client.on('interactionCreate', async (interaction) => {
     const action = interaction.options.getString('action');
     
     if (action === 'start') {
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-      const vc = member.voice.channel;
-
-      if (!vc) return interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
-
-      if (activeRecordings.has(vc.guild.id)) {
-        return interaction.reply({ content: 'Already recording in this server.', ephemeral: true });
-      }
-
       try {
+        // Multiple approaches to get the voice channel
+        let member, vc;
+        
+        // Method 1: Fetch fresh member data
+        try {
+          member = await interaction.guild.members.fetch(interaction.user.id);
+          vc = member.voice.channel;
+          console.log('Method 1 - Voice channel:', vc?.name || 'null');
+        } catch (err) {
+          console.log('Method 1 failed:', err.message);
+        }
+        
+        // Method 2: Use cached member if method 1 fails
+        if (!vc) {
+          member = interaction.member;
+          vc = member?.voice?.channel;
+          console.log('Method 2 - Voice channel:', vc?.name || 'null');
+        }
+        
+        // Method 3: Search through all voice channels
+        if (!vc) {
+          console.log('Searching through all voice channels...');
+          for (const [channelId, channel] of interaction.guild.channels.cache) {
+            if (channel.type === 2) { // Voice channel type
+              const members = channel.members;
+              if (members.has(interaction.user.id)) {
+                vc = channel;
+                console.log('Method 3 - Found user in voice channel:', vc.name);
+                break;
+              }
+            }
+          }
+        }
+
+        // If still no voice channel found, provide detailed error
+        if (!vc) {
+          console.log('Debug info:');
+          console.log('- Guild ID:', interaction.guild.id);
+          console.log('- User ID:', interaction.user.id);
+          console.log('- Member voice state:', member?.voice);
+          console.log('- Available voice channels:', 
+            interaction.guild.channels.cache
+              .filter(c => c.type === 2)
+              .map(c => `${c.name} (${c.id})`)
+          );
+          
+          return interaction.reply({ 
+            content: 'Unable to detect your voice channel. Please try:\n' +
+                    '1. Leave and rejoin the voice channel\n' +
+                    '2. Make sure the bot has permissions to see voice channels\n' +
+                    '3. Wait a moment after joining before using the command\n' +
+                    '4. Try the command again', 
+            ephemeral: true 
+          });
+        }
+
+        if (activeRecordings.has(vc.guild.id)) {
+          return interaction.reply({ content: 'Already recording in this server.', ephemeral: true });
+        }
+
         await interaction.deferReply();
+        
+        console.log(`Attempting to join voice channel: ${vc.name} (${vc.id}) in guild: ${vc.guild.name}`);
         
         const conn = joinVoiceChannel({
           channelId: vc.id,
