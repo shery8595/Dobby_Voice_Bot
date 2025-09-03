@@ -1,5 +1,14 @@
 [phases.setup]
-nixPkgs = ["python3", "gnumake", "gcc", "pkg-config", "libsodium", "libopus"]
+# Install Node.js 22 + build dependencies for native modules
+nixPkgs = [
+  "nodejs_22",
+  "python3",
+  "gnumake",
+  "gcc",
+  "pkg-config",
+  "libsodium",
+  "libopus"
+]
 
 [phases.install]
 cmds = ["npm ci"]
