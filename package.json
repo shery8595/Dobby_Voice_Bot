@@ -5,8 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js",
-    "postinstall": "apk add --no-cache python3 make g++ libc6-compat libsodium-dev opus-dev pkgconfig || true"
+    "dev": "node index.js"
   },
   "engines": {
     "node": "22.x"
